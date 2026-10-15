@@ -17,10 +17,11 @@ use gpui::Bounds;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyWindowHandle, App, ClickEvent, Context, DragMoveEvent,
-    DurationWithEasing, Element, ElementId, Entity, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, ObjectFit, Pixels, Point, PromptLevel, Render, RenderImage,
-    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Window, canvas, div, img,
-    linear_color_stop, linear_gradient, point, px, size,
+    DurationWithEasing, Element, ElementId, Entity, GlobalElementId, HighlightStyle,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, ObjectFit, Pixels, Point, PromptLevel,
+    Render, RenderImage, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement,
+    StyledText, UnderlineStyle, Window, canvas, div, img, linear_color_stop, linear_gradient,
+    point, px, size,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{
@@ -1374,6 +1375,36 @@ fn render_selection_indicator(
     indicator.into_any_element()
 }
 
+fn underscore_highlight_ranges(text: &str) -> Vec<Range<usize>> {
+    text.match_indices('_')
+        .map(|(index, _)| index..index + 1)
+        .collect()
+}
+
+fn underscore_highlight_style(text_color: gpui::Hsla) -> HighlightStyle {
+    HighlightStyle {
+        color: Some(gpui::transparent_black()),
+        underline: Some(UnderlineStyle {
+            thickness: px(1.0),
+            color: Some(text_color),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn styled_text_with_visible_underscores(
+    text: impl Into<SharedString>,
+    text_color: gpui::Hsla,
+) -> StyledText {
+    let text = text.into();
+    let underscore_style = underscore_highlight_style(text_color);
+    let highlights = underscore_highlight_ranges(text.as_ref())
+        .into_iter()
+        .map(|range| (range, underscore_style));
+    StyledText::new(text).with_highlights(highlights)
+}
+
 fn render_item_surface<T>(
     item: &ClipboardListItem,
     selected: bool,
@@ -1490,7 +1521,10 @@ fn render_item_surface<T>(
                 .text_size(metrics.preview_font_size)
                 .line_height(metrics.preview_line_height)
                 .line_clamp(metrics.preview_line_count)
-                .child(item.note_text.clone()));
+                .child(styled_text_with_visible_underscores(
+                    item.note_text.clone(),
+                    theme.foreground,
+                )));
         if inline_info_bar {
             preview = preview.children(info_bar.take());
         }
@@ -1500,7 +1534,10 @@ fn render_item_surface<T>(
                 .line_height(metrics.preview_line_height)
                 .line_clamp(content_metrics.preview_line_count)
                 .text_color(theme.muted_foreground)
-                .child(file_list.read(cx).preview_summary());
+                .child(styled_text_with_visible_underscores(
+                    file_list.read(cx).preview_summary(),
+                    theme.muted_foreground,
+                ));
         } else {
             preview = preview.child(file_list);
         }
@@ -1543,16 +1580,22 @@ fn render_item_surface<T>(
                     content_metrics.preview_line_count,
                 ));
     } else {
+        let text_color = if show_note_header {
+            theme.muted_foreground
+        } else {
+            theme.foreground
+        };
         preview = preview
             .text_size(metrics.preview_font_size)
             .line_height(metrics.preview_line_height)
             .line_clamp(content_metrics.preview_line_count)
-            .text_color(if show_note_header { theme.muted_foreground } else { theme.foreground })
-            .child(
+            .text_color(text_color)
+            .child(styled_text_with_visible_underscores(
                 display_preview
                     .map(|preview| preview.text.clone())
                     .unwrap_or_else(|| item.preview_text.clone()),
-            );
+                text_color,
+            ));
     }
 
     let meta_row = div()
@@ -1589,7 +1632,10 @@ fn render_item_surface<T>(
             .line_height(metrics.preview_line_height)
             .font_weight(gpui::FontWeight::MEDIUM)
             .child(div().flex_1().min_w_0().truncate()
-                .child(item.note_text.split_whitespace().collect::<Vec<_>>().join(" ")));
+                .child(styled_text_with_visible_underscores(
+                    item.note_text.split_whitespace().collect::<Vec<_>>().join(" "),
+                    theme.foreground,
+                )));
         if inline_info_bar {
             header = header.children(info_bar.take());
         }
@@ -2869,12 +2915,32 @@ mod tests {
     use super::{
         ADAPTIVE_IMAGE_PREVIEW_LINES, ListItemMetrics, compute_reorder_animation_start_offsets,
         estimate_text_lines, file_list_meta_label, image_meta_label, resolve_row_height,
+        underscore_highlight_ranges, underscore_highlight_style,
     };
     use crate::config::{CardItemGap, ListItemHeight, ListItemStyle};
     use crate::domain::clipboard::ImageDimensions;
     use crate::i18n::{Locale, Translator};
     use gpui::px;
     use std::collections::HashMap;
+
+    #[test]
+    fn text_preview_highlights_each_underscore_by_byte_range() {
+        assert_eq!(
+            underscore_highlight_ranges("中_a__b"),
+            vec![3..4, 5..6, 6..7]
+        );
+    }
+
+    #[test]
+    fn underscore_highlight_hides_the_glyph_and_draws_one_explicit_line() {
+        let text_color = gpui::rgb_to_hsla(gpui::rgb(0x123456));
+        let style = underscore_highlight_style(text_color);
+        let underline = style.underline.expect("下划线样式应存在");
+
+        assert_eq!(style.color, Some(gpui::transparent_black()));
+        assert_eq!(underline.color, Some(text_color));
+        assert_eq!(underline.thickness, px(1.0));
+    }
 
     #[test]
     fn file_list_meta_label_includes_file_count() {
